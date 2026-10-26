@@ -411,7 +411,7 @@ setup(
     ),
     long_description_content_type="text/markdown",
     license="Apache-2.0",
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     packages=all_packages,
     package_dir=package_dir,
     include_package_data=True,

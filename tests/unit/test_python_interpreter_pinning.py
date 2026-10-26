@@ -237,6 +237,25 @@ def test_setup_build_uses_packaging_interpreter(tmp_path, monkeypatch, override)
     assert calls[0].get("PYTHON_EXECUTABLE") == sys.executable
 
 
+def test_packaging_metadata_matches_the_helpers_floor():
+    """Three sources say 3.10+; the wheel metadata said 3.8 and drifted."""
+    tree = ast.parse((_REPO_ROOT / "setup.py").read_text())
+    requires = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg == "python_requires" and isinstance(kw.value, ast.Constant):
+                    requires = kw.value.value
+    assert requires is not None, "setup.py no longer sets python_requires"
+
+    floor = tuple(int(part) for part in requires.lstrip(">=").split(".")[:2])
+    # MLIR's own MLIR_MINIMUM_PYTHON_VERSION is 3.10; the helper enforces it.
+    assert floor >= (3, 10), f"python_requires={requires!r} admits interpreters the build rejects"
+
+    readme = (_REPO_ROOT / "README.md").read_text()
+    assert "Python 3.10+" in readme or "Python 3.10 or newer" in readme
+
+
 # ---- cmake/FlyDSLPythonCheck.cmake -------------------------------------------
 
 
