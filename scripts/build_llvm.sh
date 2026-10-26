@@ -211,8 +211,11 @@ else
 fi
 
 # Build the selected LLVM projects and targets in Release mode.
-# Explicitly set nanobind directory if found to help CMake locate it
-NANOBIND_DIR=$(python3 -c "import nanobind; import os; print(os.path.dirname(nanobind.__file__) + '/cmake')")
+# Pin the MLIR Python bindings to one interpreter and locate nanobind from it.
+# MLIR detects Python twice (Python3_ for the project, Python_ for nanobind), so
+# pinning only Python3_EXECUTABLE lets the bindings build against a different
+# interpreter and land under the wrong ABI tag.
+source "${SCRIPT_DIR}/python_interpreter.sh"
 
 cmake -G "$GENERATOR" \
     -S "$LLVM_SRC_DIR/llvm" \
@@ -227,8 +230,7 @@ cmake -G "$GENERATOR" \
     -DLLVM_INSTALL_GTEST=ON \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -DMLIR_BINDINGS_PYTHON_NB_DOMAIN=mlir \
-    -DPython3_EXECUTABLE=$(which python3) \
-    -Dnanobind_DIR="$NANOBIND_DIR" \
+    "${FLY_PYTHON_CMAKE_ARGS[@]}" \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_BUILD_LLVM_DYLIB=OFF \
     -DLLVM_LINK_LLVM_DYLIB=OFF \
