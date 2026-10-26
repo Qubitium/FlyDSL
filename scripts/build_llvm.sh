@@ -7,6 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BASE_DIR="$(cd "${REPO_ROOT}/.." && pwd)"
+source "${SCRIPT_DIR}/python_interpreter.sh"
 LLVM_SRC_DIR="$BASE_DIR/llvm-project"
 LLVM_BUILD_DIR="$LLVM_SRC_DIR/build-flydsl"
 LLVM_INSTALL_DIR="${LLVM_INSTALL_DIR:-$LLVM_SRC_DIR/mlir_install}"
@@ -15,7 +16,7 @@ LLVM_PACKAGE_INSTALL="${LLVM_PACKAGE_INSTALL:-1}"
 
 # Read LLVM commit hash from thirdparty/llvm-build-info.json (upstream entry)
 LLVM_BUILD_INFO="${REPO_ROOT}/thirdparty/llvm-build-info.json"
-LLVM_COMMIT_DEFAULT=$(python3 -c "import json; print(json.load(open('${LLVM_BUILD_INFO}'))['upstream']['llvm_hash'])")
+LLVM_COMMIT_DEFAULT=$("${FLY_PYTHON_EXECUTABLE}" -c "import json, sys; print(json.load(open(sys.argv[1]))['upstream']['llvm_hash'])" "${LLVM_BUILD_INFO}")
 LLVM_EXT_DIR="${REPO_ROOT}/thirdparty/llvm-extensions"
 
 # FLYDSL_LLVM_REF / FLYDSL_LLVM_REMOTE build any commit, from any remote, without
@@ -30,7 +31,7 @@ LLVM_NO_EXT="${FLYDSL_LLVM_NO_EXT:-0}"
 # upstream.required_patches go into every build (LLVM is broken for FlyDSL
 # without them), then upstream.extensions, in order. See CONTRIBUTING.md,
 # "Add an LLVM Extension".
-LLVM_PATCH_LIST="$(python3 - "${LLVM_BUILD_INFO}" <<'PY_EOF'
+LLVM_PATCH_LIST="$("${FLY_PYTHON_EXECUTABLE}" - "${LLVM_BUILD_INFO}" <<'PY_EOF'
 import json, sys
 pin = json.load(open(sys.argv[1]))["upstream"]
 for kind in ("required_patches", "extensions"):
@@ -199,7 +200,7 @@ echo "Configuring LLVM..."
 # Install dependencies for Python bindings
 echo "Installing Python dependencies..."
 NANOBIND_VERSION="${NANOBIND_VERSION:-2.12.0}"
-pip install "nanobind==${NANOBIND_VERSION}" numpy pybind11
+"${FLY_PYTHON_EXECUTABLE}" -m pip install "nanobind==${NANOBIND_VERSION}" numpy pybind11
 
 # Check for ninja
 GENERATOR="Unix Makefiles"
@@ -211,11 +212,8 @@ else
 fi
 
 # Build the selected LLVM projects and targets in Release mode.
-# Pin the MLIR Python bindings to one interpreter and locate nanobind from it.
-# MLIR detects Python twice (Python3_ for the project, Python_ for nanobind), so
-# pinning only Python3_EXECUTABLE lets the bindings build against a different
-# interpreter and land under the wrong ABI tag.
-source "${SCRIPT_DIR}/python_interpreter.sh"
+# Refresh nanobind after installation, retaining the interpreter resolved before cd.
+PYTHON_EXECUTABLE="${FLY_PYTHON_EXECUTABLE}" source "${SCRIPT_DIR}/python_interpreter.sh"
 
 cmake -G "$GENERATOR" \
     -S "$LLVM_SRC_DIR/llvm" \

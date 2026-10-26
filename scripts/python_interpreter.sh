@@ -22,7 +22,7 @@
 #
 # Usage:
 #   source scripts/python_interpreter.sh
-#   cmake "${CMAKE_ARGS[@]}"   # FLY_PYTHON_CMAKE_ARGS
+#   cmake "${FLY_PYTHON_CMAKE_ARGS[@]}"
 #
 # Sets FLY_PYTHON_EXECUTABLE, FLY_PYTHON_VERSION, FLY_PYTHON_SOABI,
 # FLY_NANOBIND_DIR and
@@ -57,10 +57,9 @@ fi
 
 # Running the interpreter proves it is a usable Python, not just an executable
 # file (coreutils multicall binaries also accept `-c`). MLIR bindings need 3.10+.
-FLY_PYTHON_VERSION="$("${FLY_PYTHON_EXECUTABLE}" -c \
+if ! FLY_PYTHON_VERSION="$("${FLY_PYTHON_EXECUTABLE}" -c \
   'import sys; print(".".join(map(str, sys.version_info[:3])) if sys.version_info >= (3, 10) else "")' \
-  2>/dev/null || true)"
-if [[ -z "${FLY_PYTHON_VERSION}" ]]; then
+  2>/dev/null)" || [[ ! "${FLY_PYTHON_VERSION}" =~ ^3\.[0-9]+\.[0-9]+$ ]]; then
   echo "Error: not a usable Python 3.10+ interpreter: ${FLY_PYTHON_EXECUTABLE}" >&2
   return 1 2>/dev/null || exit 1
 fi

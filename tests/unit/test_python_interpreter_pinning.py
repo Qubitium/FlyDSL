@@ -16,11 +16,14 @@ build is needed: the helper is sourced directly, and the guard is exercised
 with a small standalone CMake project.
 """
 
+import ast
 import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,7 +55,7 @@ def test_pins_both_variable_families_to_the_same_interpreter():
     result = _run_helper({"PYTHON_EXECUTABLE": sys.executable})
 
     assert result.returncode == 0, result.stderr
-    args = result.stdout.split()
+    args = result.stdout.splitlines()
     python3_pins = [a for a in args if a.startswith("-DPython3_EXECUTABLE=")]
     python_pins = [a for a in args if a.startswith("-DPython_EXECUTABLE=")]
 
@@ -60,29 +63,31 @@ def test_pins_both_variable_families_to_the_same_interpreter():
     assert len(python_pins) == 1, args
     # -DPython_EXECUTABLE= must not be satisfied by -DPython3_EXECUTABLE=.
     assert python3_pins[0].split("=", 1)[1] == python_pins[0].split("=", 1)[1]
+    assert Path(python_pins[0].split("=", 1)[1]).resolve() == Path(sys.executable).resolve()
 
 
-def test_nanobind_dir_comes_from_the_pinned_interpreter():
+def test_nanobind_dir_comes_from_the_pinned_interpreter(tmp_path):
     """nanobind's CMake dir used to be resolved from whatever python3 was on PATH."""
-    result = _run_helper({"PYTHON_EXECUTABLE": sys.executable})
+    package = tmp_path / "nanobind"
+    (package / "cmake").mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    path_python = tmp_path / "python3"
+    path_python.write_text("#!/bin/sh\nexit 1\n")
+    path_python.chmod(0o755)
+    result = _run_helper(
+        {
+            "PYTHON_EXECUTABLE": sys.executable,
+            "PYTHONPATH": str(tmp_path),
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        }
+    )
 
     assert result.returncode == 0, result.stderr
-    nanobind_pins = [a for a in result.stdout.split() if a.startswith("-Dnanobind_DIR=")]
+    nanobind_pins = [a for a in result.stdout.splitlines() if a.startswith("-Dnanobind_DIR=")]
     assert len(nanobind_pins) == 1, result.stdout
 
     pinned = Path(nanobind_pins[0].split("=", 1)[1]).resolve()
-    from_interpreter = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import nanobind, os; print(os.path.dirname(nanobind.__file__) + '/cmake')",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if from_interpreter.returncode != 0:
-        pytest.skip("nanobind is not installed for the test interpreter")
-    assert pinned == Path(from_interpreter.stdout.strip()).resolve()
+    assert pinned == package / "cmake"
 
 
 def test_reports_version_and_soabi():
@@ -92,7 +97,8 @@ def test_reports_version_and_soabi():
     assert result.returncode == 0, result.stderr
     combined = result.stdout + result.stderr
     assert "Python bindings interpreter:" in combined
-    assert Path(sys.executable).resolve().name in combined
+    assert ".".join(map(str, sys.version_info[:3])) in combined
+    assert f"SOABI: {sysconfig.get_config_var('SOABI')}" in combined
 
 
 def test_missing_interpreter_fails_without_killing_a_set_e_caller():
@@ -121,10 +127,11 @@ def test_missing_interpreter_fails_without_killing_a_set_e_caller():
     assert "CALLER-ALIVE" in survives.stdout
 
 
-def test_non_python_executable_is_rejected(tmp_path):
+@pytest.mark.parametrize("body", ["exit 0", 'printf "%s\\n" "$@"', "echo 3.14.10; exit 1"])
+def test_non_python_executable_is_rejected(tmp_path, body):
     """An executable that is not Python must not be accepted as the pin."""
     fake = tmp_path / "not-python"
-    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.write_text(f"#!/bin/sh\n{body}\n")
     fake.chmod(0o755)
 
     result = _run_helper({"PYTHON_EXECUTABLE": str(fake)})
@@ -135,7 +142,7 @@ def test_non_python_executable_is_rejected(tmp_path):
 
 def test_venv_launcher_is_preserved_not_collapsed_to_base(tmp_path):
     """build_wheels.sh builds from a venv; resolving its launcher loses the venv."""
-    venv = tmp_path / "venv"
+    venv = tmp_path / "venv with spaces"
     (venv / "bin").mkdir(parents=True)
     (venv / "pyvenv.cfg").write_text("home = /\n")
     launcher = venv / "bin" / "python"
@@ -144,8 +151,90 @@ def test_venv_launcher_is_preserved_not_collapsed_to_base(tmp_path):
     result = _run_helper({"PYTHON_EXECUTABLE": str(launcher)})
 
     assert result.returncode == 0, result.stderr
-    pins = [a for a in result.stdout.split() if a.startswith("-DPython3_EXECUTABLE=")]
+    pins = [a for a in result.stdout.splitlines() if a.startswith("-DPython3_EXECUTABLE=")]
     assert pins and pins[0].split("=", 1)[1] == str(launcher)
+
+
+@pytest.mark.parametrize("relative", [True, False])
+def test_llvm_build_uses_selected_python_before_changing_directory(tmp_path, relative):
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("build_llvm.sh", "python_interpreter.sh"):
+        shutil.copy(_REPO_ROOT / "scripts" / name, scripts / name)
+    (repo / "thirdparty" / "llvm-extensions").mkdir(parents=True)
+    (repo / "thirdparty" / "llvm-build-info.json").write_text('{"upstream": {"llvm_hash": "test-ref"}}')
+    (tmp_path / "llvm-project").mkdir()
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    log = tmp_path / "commands.log"
+    for name, body in {
+        "git": "exit 0",
+        "pip": 'echo WRONG-PIP >> "$BUILD_LOG"',
+        "cmake": 'printf "%s\\n" "$@" >> "$BUILD_LOG"; exit 73',
+    }.items():
+        command = commands / name
+        command.write_text(f"#!/bin/sh\n{body}\n")
+        command.chmod(0o755)
+    selected = repo / "selected python"
+    selected.write_text(
+        '#!/bin/sh\nif [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
+        '  echo SELECTED-PIP >> "$BUILD_LOG"\n  exit 0\nfi\n'
+        f'exec "{sys.executable}" "$@"\n'
+    )
+    selected.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(scripts / "build_llvm.sh")],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PYTHON_EXECUTABLE": "./selected python" if relative else str(selected),
+            "PATH": f"{commands}{os.pathsep}{os.environ['PATH']}",
+            "BUILD_LOG": str(log),
+        },
+    )
+
+    assert result.returncode == 73, result.stdout + result.stderr
+    commands_run = log.read_text().splitlines()
+    assert "SELECTED-PIP" in commands_run
+    assert "WRONG-PIP" not in commands_run
+    assert f"-DPython_EXECUTABLE={selected}" in commands_run
+    assert f"-DPython3_EXECUTABLE={selected}" in commands_run
+
+
+@pytest.mark.parametrize("override", [None, "/another/python"])
+def test_setup_build_uses_packaging_interpreter(tmp_path, monkeypatch, override):
+    tree = ast.parse((_REPO_ROOT / "setup.py").read_text())
+    function = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_assert_embedded_mlir_exists"
+    )
+    embedded = tmp_path / "_mlir"
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(kwargs["env"])
+        embedded.mkdir()
+
+    for name in ("FLY_IN_BUILD_SH", "FLY_REBUILD", "PYTHON_EXECUTABLE"):
+        monkeypatch.delenv(name, raising=False)
+    if override:
+        monkeypatch.setenv("PYTHON_EXECUTABLE", override)
+    namespace = {
+        "os": os,
+        "sys": sys,
+        "subprocess": SimpleNamespace(run=run),
+        "EMBEDDED__MLIR": embedded,
+        "REPO_ROOT": _REPO_ROOT,
+        "BUILD_DIR_REL": "build-fly",
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "setup.py", "exec"), namespace)
+    namespace["_assert_embedded_mlir_exists"]()
+
+    assert len(calls) == 1
+    assert calls[0].get("PYTHON_EXECUTABLE") == sys.executable
 
 
 # ---- cmake/FlyDSLPythonCheck.cmake -------------------------------------------
@@ -193,11 +282,8 @@ def test_guard_accepts_one_interpreter_spelled_two_ways(tmp_path):
 
 def test_guard_fails_when_the_two_detections_disagree(tmp_path):
     """This is the regression: mismatched passes used to configure happily."""
-    other = shutil.which("python3.12") or shutil.which("python3.11") or shutil.which("python3")
-    if other is None:
-        pytest.skip("a second interpreter is required")
-    if Path(other).resolve() == Path(sys.executable).resolve():
-        pytest.skip("only one interpreter is available")
+    other = tmp_path / "other-python"
+    shutil.copy(sys.executable, other)
 
     result = _run_cmake_guard(tmp_path, sys.executable, other)
 
@@ -209,11 +295,8 @@ def test_guard_fails_when_the_two_detections_disagree(tmp_path):
 
 def test_guard_can_be_downgraded_to_a_warning(tmp_path):
     """Escape hatch for environments that knowingly mix interpreters."""
-    other = shutil.which("python3.12") or shutil.which("python3.11") or shutil.which("python3")
-    if other is None:
-        pytest.skip("a second interpreter is required")
-    if Path(other).resolve() == Path(sys.executable).resolve():
-        pytest.skip("only one interpreter is available")
+    other = tmp_path / "other-python"
+    shutil.copy(sys.executable, other)
 
     result = _run_cmake_guard(tmp_path, sys.executable, other, allow=True)
 
