@@ -19,7 +19,7 @@ def _clear_arch_caches():
     device.get_rocm_device_count.cache_clear()
 
 
-def test_agent_enumerator_uses_default_invocation(monkeypatch):
+def test_arch_detection_uses_visible_device_query(monkeypatch):
     calls = []
 
     def check_output(command, **kwargs):
@@ -29,13 +29,28 @@ def test_agent_enumerator_uses_default_invocation(monkeypatch):
     monkeypatch.setattr(subprocess, "check_output", check_output)
 
     assert device._arch_from_rocm_agent_enumerator() == "gfx950:sramecc+:xnack-"
-    assert calls[0][0] == ["rocm_agent_enumerator"]
+    assert calls[0][0] == ["rocm_agent_enumerator", "-name"]
+
+
+def test_arch_detection_ignores_hidden_heterogeneous_gpu(monkeypatch):
+    """KFD counting order must not choose the architecture of a hidden GPU."""
+
+    def check_output(command, **_kwargs):
+        if command == ["rocm_agent_enumerator"]:
+            return "gfx1100\ngfx950\n"
+        assert command == ["rocm_agent_enumerator", "-name"]
+        return "gfx950:sramecc+:xnack-\ngfx9-4-generic:sramecc+:xnack-\n"
+
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    assert device._arch_from_hardware() == "gfx950"
 
 
 @pytest.mark.parametrize("failure", ["missing", "timeout", "exit", "empty", "cpu-only"])
 def test_hardware_detection_falls_back_to_rocminfo(monkeypatch, failure):
     def check_output(command, **_kwargs):
-        if command == ["rocm_agent_enumerator"]:
+        if command == ["rocm_agent_enumerator", "-name"]:
             if failure == "missing":
                 raise FileNotFoundError(command[0])
             if failure == "timeout":

@@ -9,12 +9,16 @@ from typing import Optional
 _ROCM_AGENT_TIMEOUT_S = int(os.environ.get("FLYDSL_ROCM_AGENT_TIMEOUT", "300"))
 
 
-def _rocm_agent_names(timeout: int) -> list[str]:
-    # The default output has one architecture per agent. With -name, ROCm can
-    # report multiple supported ISAs per GPU, including generic targets.
+def _rocm_agent_names(timeout: int, *, visible_names: bool = False) -> list[str]:
+    # The default output has one architecture per physical agent, so it is used
+    # for counting. -name goes through rocminfo/HSA and therefore respects
+    # runtime visibility, which is required for architecture detection.
+    command = ["rocm_agent_enumerator"]
+    if visible_names:
+        command.append("-name")
     try:
         out = subprocess.check_output(
-            ["rocm_agent_enumerator"],
+            command,
             text=True,
             timeout=timeout,
             stderr=subprocess.DEVNULL,
@@ -25,8 +29,8 @@ def _rocm_agent_names(timeout: int) -> list[str]:
 
 
 def _arch_from_rocm_agent_enumerator() -> Optional[str]:
-    """Query rocm_agent_enumerator (standard ROCm tool) for the first GPU arch."""
-    names = _rocm_agent_names(_ROCM_AGENT_TIMEOUT_S)
+    """Query the first HSA-visible ROCm GPU architecture."""
+    names = _rocm_agent_names(_ROCM_AGENT_TIMEOUT_S, visible_names=True)
     return names[0] if names else None
 
 
