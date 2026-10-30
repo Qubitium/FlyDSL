@@ -14,24 +14,19 @@ pytestmark = [pytest.mark.l0_backend_agnostic]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Collected with no ROCm tools and no arch override: backend-agnostic collection
-# must not require a dummy GPU target.
-_COLLECT_ONLY_PROBE = """
-import sys
-
-import pytest
-
-sys.exit(pytest.main(["--collect-only", "-q", "-m", "l0_backend_agnostic", *sys.argv[1:]]))
-"""
-
 
 @pytest.fixture(autouse=True)
-def _clear_arch_caches():
-    device._arch_from_hardware.cache_clear()
-    device.get_rocm_device_count.cache_clear()
+def _clear_arch_caches(monkeypatch):
+    for name in ("FLYDSL_GPU_ARCH", "HSA_OVERRIDE_GFX_VERSION", "ARCH"):
+        monkeypatch.delenv(name, raising=False)
+    # These functions may be monkeypatched until after this fixture tears down.
+    clear_arch = device._arch_from_hardware.cache_clear
+    clear_count = device.get_rocm_device_count.cache_clear
+    clear_arch()
+    clear_count()
     yield
-    device._arch_from_hardware.cache_clear()
-    device.get_rocm_device_count.cache_clear()
+    clear_arch()
+    clear_count()
 
 
 def test_arch_detection_uses_visible_device_query(monkeypatch):
@@ -195,14 +190,23 @@ def test_device_count_remains_best_effort(monkeypatch, failure):
     assert device.get_rocm_device_count() == 0
 
 
-def test_backend_agnostic_collection_needs_no_gpu(tmp_path):
+@pytest.mark.parametrize(
+    ("module", "expected_test"),
+    [
+        ("test_device.py", "test_arch_detection_uses_visible_device_query"),
+        ("test_softmax_autotune.py", "test_candidate_order_is_deterministic"),
+        ("test_ktrace_emit.py", "test_ranges_pair_by_start_slot_not_by_name"),
+    ],
+)
+def test_backend_agnostic_collection_needs_no_gpu(tmp_path, module, expected_test):
     """Collecting L0 tests must work with no detection tools and no arch override.
 
     Regression for the RuntimeError that made ``--collect-only -m
     l0_backend_agnostic`` fail at import time on a host without ROCm tooling.
     """
-    probe = tmp_path / "collect_probe.py"
-    probe.write_text(_COLLECT_ONLY_PROBE)
+    if module != "test_device.py":
+        pytest.importorskip("torch")
+        pytest.importorskip("flydsl._mlir.ir")
     probe_env = {
         key: value
         for key, value in os.environ.items()
@@ -210,10 +214,26 @@ def test_backend_agnostic_collection_needs_no_gpu(tmp_path):
     }
     # Empty PATH: rocm_agent_enumerator and rocminfo are not resolvable.
     probe_env["PATH"] = ""
-    probe_env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(_REPO_ROOT / "python"), os.environ.get("PYTHONPATH")]))
+    # Preserve the package/build paths used by the parent test session.
+    probe_env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(_REPO_ROOT), *sys.path]))
+    probe_env["PYTEST_ADDOPTS"] = ""
+    probe_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    probe_env["FLYDSL_AUTOTUNE_CACHE_DIR"] = str(tmp_path / "autotune")
 
     result = subprocess.run(
-        [sys.executable, str(probe), str(_REPO_ROOT / "tests" / "unit" / "test_device.py")],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-m",
+            "l0_backend_agnostic",
+            "-p",
+            "no:cacheprovider",
+            str(_REPO_ROOT / "tests" / "unit" / module),
+        ],
+        cwd=_REPO_ROOT,
         env=probe_env,
         text=True,
         capture_output=True,
@@ -221,4 +241,4 @@ def test_backend_agnostic_collection_needs_no_gpu(tmp_path):
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "RuntimeError" not in result.stdout + result.stderr
+    assert expected_test in result.stdout, result.stdout + result.stderr

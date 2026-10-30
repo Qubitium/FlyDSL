@@ -6,9 +6,8 @@
 """GPU-free contracts for the Softmax autotune adopter.
 
 Candidate generation, path classification and cache-key partitioning are pure host-side
-logic, so they are tested here rather than behind an l2_device gate. The wave size is
-injected explicitly: kernels/norm/softmax_kernel.py resolves WARP_SIZE at import time, so
-an ambient value would make these assertions a property of whatever host ran them.
+logic, so they are tested here rather than behind an l2_device gate. Wave sizes are
+injected explicitly or mocked at test setup; importing the modules needs no GPU target.
 """
 
 import importlib
@@ -27,7 +26,7 @@ from kernels.norm.softmax_autotune import (
     tile_cols,
     uses_fast_path,
 )
-from kernels.norm.softmax_kernel import BLOCK_THREADS, TUNING_SCHEMA
+from kernels.norm.softmax_kernel import BLOCK_THREADS, TUNING_SCHEMA, build_softmax_module
 
 pytestmark = [pytest.mark.l0_backend_agnostic]
 
@@ -52,6 +51,7 @@ class FakeTensor:
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
     """Isolate the module-level tuner's in-memory and on-disk state."""
+    monkeypatch.setattr("kernels.norm.softmax_autotune.get_warp_size", lambda: 64)
     _softmax_tuner.cache.clear()
     _softmax_tuner._artifact_cache.clear()
     monkeypatch.setenv("FLYDSL_AUTOTUNE_CACHE_DIR", str(tmp_path / "cache"))
@@ -83,6 +83,29 @@ def _identities(configs):
         )
         for c in configs
     ]
+
+
+def test_default_wave_size_is_resolved_at_call_time(monkeypatch):
+    for warp_size in WAVE_SIZES:
+        monkeypatch.setattr("kernels.norm.softmax_autotune.get_warp_size", lambda: warp_size)
+        assert is_legal(128, threads_per_row=64, rows_per_block=2) == (warp_size == 64)
+        assert _identities(candidate_configs()) == _identities(candidate_configs(warp_size))
+
+
+def test_explicit_wave_size_needs_no_hardware(monkeypatch):
+    def unexpected_probe():
+        pytest.fail("explicit wave sizes must not probe hardware")
+
+    monkeypatch.setattr("kernels.norm.softmax_autotune.get_warp_size", unexpected_probe)
+    for warp_size in WAVE_SIZES:
+        assert candidate_configs(warp_size)
+        assert is_legal(128, warp_size)
+
+
+def test_kernel_builder_uses_current_wave_size(monkeypatch):
+    monkeypatch.setattr("kernels.norm.softmax_kernel.get_warp_size", lambda: 32)
+    with pytest.raises(ValueError, match="THREADS_PER_ROW <= WARP_SIZE"):
+        build_softmax_module(2, 64, BLOCK_THREADS=128, THREADS_PER_ROW=64, ROWS_PER_BLOCK=2)
 
 
 # ── candidate generation ─────────────────────────────────────────────────

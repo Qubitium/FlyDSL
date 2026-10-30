@@ -7,10 +7,10 @@ import os
 from contextlib import contextmanager
 
 from flydsl.autotune import Config, _tuning_enabled, autotune
+from flydsl.runtime.device import get_warp_size
 from kernels.norm.softmax_kernel import (
     BLOCK_THREADS,
     TUNING_SCHEMA,
-    WARP_SIZE,
     softmax_direct,
 )
 
@@ -71,13 +71,14 @@ def uses_fast_path(N: int, dtype_str: str, threads_per_row: int) -> bool:
 
 def is_legal(
     block_threads: int,
-    warp_size: int = WARP_SIZE,
+    warp_size: int | None = None,
     *,
     threads_per_row: int | None = None,
     rows_per_block: int = 1,
 ) -> bool:
-    """Objective legality only. ``warp_size`` is a parameter because the module-level
-    WARP_SIZE is resolved at import time and cannot be patched per test."""
+    """Check legality for an explicit wave size, or resolve the target on demand."""
+    if warp_size is None:
+        warp_size = get_warp_size()
     if block_threads <= 0 or block_threads > MAX_BLOCK_THREADS:
         return False
     threads_per_row = block_threads if threads_per_row is None else threads_per_row
@@ -134,7 +135,7 @@ def _multi_row_geometries(m_in: int, N: int, dtype_str: str, warp_size: int):
 
 
 def candidate_configs(
-    warp_size: int = WARP_SIZE,
+    warp_size: int | None = None,
     *,
     m_in: int = 64,
     N: int = 4096,
@@ -146,6 +147,8 @@ def candidate_configs(
     geometry crosses occupancy hints, while Quack-style multi-row geometry
     explores subgroup packing.
     """
+    if warp_size is None:
+        warp_size = get_warp_size()
     seen = set()
     configs = []
 
