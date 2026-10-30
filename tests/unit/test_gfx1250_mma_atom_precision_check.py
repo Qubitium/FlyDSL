@@ -26,6 +26,7 @@ def _requires_gfx1250(rocm_arch):
     if not rocm_arch.startswith("gfx1250"):
         pytest.skip(f"requires gfx1250, got {rocm_arch}")
 
+
 WAVE_SIZE = 32
 M, N, K = 16, 16, 32
 

@@ -462,20 +462,27 @@ Transforms Python control flow to MLIR ops at the AST level:
 `get_rocm_arch()` in `runtime/device.py` checks in the following order:
 1. `FLYDSL_GPU_ARCH` env var
 2. `HSA_OVERRIDE_GFX_VERSION` env var (supports `9.4.2` → `gfx942` format)
-3. `rocm_agent_enumerator -name` system tool, which follows HSA runtime device visibility
-4. `rocminfo` system tool
+3. `ARCH` env var (the compile-time target, also set by `pytest --flydsl-compile-arch`)
+4. `rocm_agent_enumerator -name` system tool, which follows HSA runtime device visibility
+5. `rocminfo` system tool
 
 If neither tool identifies a GPU and no explicit override is set, detection
 raises `RuntimeError` instead of assuming `gfx942`. On hosts without accessible
-ROCm hardware or detection tools, set `FLYDSL_GPU_ARCH` to the intended target
-(for example, `FLYDSL_GPU_ARCH=gfx950`).
+ROCm hardware or detection tools, set `FLYDSL_GPU_ARCH` (or `ARCH`) to the
+intended target (for example, `FLYDSL_GPU_ARCH=gfx950`). This is what keeps
+`ARCH=gfx950 COMPILE_ONLY=1` cross-compiles — and every kernel module that probes
+the target at import time — importable without ROCm tooling.
+
+A failed detection is cached, so a missing or hanging tool is probed once per
+process rather than once per `get_rocm_arch()` call.
 
 Device counting uses the default `rocm_agent_enumerator` output instead:
 `-name` can list multiple supported ISAs per GPU and overcount devices. The
-query used for counting reads physical topology and may not follow runtime
-device visibility. The count remains best-effort and returns zero if the
-enumerator is unavailable or reports no GPU agents; it does not use the
-`rocminfo` fallback.
+query used for counting reads physical topology and does **not** follow
+`HIP_VISIBLE_DEVICES` / `ROCR_VISIBLE_DEVICES`, so the result is a physical agent
+count, not a visibility-aware one; use HIP's `hipGetDeviceCount` when visibility
+matters. The count remains best-effort and returns zero if the enumerator is
+unavailable or reports no GPU agents; it does not use the `rocminfo` fallback.
 
 ---
 

@@ -6,7 +6,14 @@ import os
 import subprocess
 from typing import Optional
 
+from ..utils import env
+
 _ROCM_AGENT_TIMEOUT_S = int(os.environ.get("FLYDSL_ROCM_AGENT_TIMEOUT", "300"))
+
+_DETECTION_FAILED = (
+    "Unable to detect a ROCm GPU architecture with rocm_agent_enumerator or rocminfo. "
+    "Set FLYDSL_GPU_ARCH (or ARCH) to the intended gfx target when hardware detection is unavailable."
+)
 
 
 def _rocm_agent_names(timeout: int, *, visible_names: bool = False) -> list[str]:
@@ -52,16 +59,30 @@ def _arch_from_rocminfo() -> Optional[str]:
     return None
 
 
+def _normalize_arch(value: str) -> str:
+    """Normalise a user-supplied target: lower-case, ``9.4.2`` -> ``gfx942``."""
+    value = value.strip().lower()
+    if value.startswith("gfx"):
+        return value
+    if value.count(".") == 2:
+        return "gfx" + value.replace(".", "")
+    return value
+
+
 @functools.lru_cache(maxsize=None)
 def _arch_from_hardware() -> str:
-    """Cached hardware detection."""
+    """Cached hardware detection.
+
+    Failures are cached as a sentinel rather than left uncached: ``lru_cache`` does
+    not memoise exceptions, and each probe can block for up to
+    ``FLYDSL_ROCM_AGENT_TIMEOUT`` seconds. Re-probing on every ``get_rocm_arch()``
+    call would otherwise turn one missing tool into a repeated stall.
+
+    Returns an empty string when no architecture can be detected; callers raise so
+    that the message (and the suggestion to set an override) stays in one place.
+    """
     arch = _arch_from_rocm_agent_enumerator() or _arch_from_rocminfo()
-    if arch:
-        return arch.split(":", 1)[0]
-    raise RuntimeError(
-        "Unable to detect a ROCm GPU architecture with rocm_agent_enumerator or rocminfo. "
-        "Set FLYDSL_GPU_ARCH to the intended gfx target when hardware detection is unavailable."
-    )
+    return arch.split(":", 1)[0] if arch else ""
 
 
 def get_rocm_arch() -> str:
@@ -70,24 +91,34 @@ def get_rocm_arch() -> str:
     Lower-casing happens here so every caller can compare against lower-case
     literals without normalising first; ROCm itself only ever emits lower-case
     names, so this only affects hand-set environment overrides.
-    Raises RuntimeError if neither an override nor hardware detection supplies
-    a target; unavailable hardware must not silently select another GPU's ISA.
-    """
-    env = os.environ.get("FLYDSL_GPU_ARCH") or os.environ.get("HSA_OVERRIDE_GFX_VERSION")
-    if env:
-        env = env.lower()
-        if env.startswith("gfx"):
-            return env
-        if env.count(".") == 2:
-            parts = env.split(".")
-            return f"gfx{parts[0]}{parts[1]}{parts[2]}"
 
-    return _arch_from_hardware().lower()
+    The explicit overrides are checked before hardware, and include the
+    compile-time ``ARCH`` used for cross-compilation and ``COMPILE_ONLY`` runs, so
+    modules that probe the target at import time still import on hosts without
+    ROCm tooling. Raises RuntimeError if neither an override nor hardware
+    detection supplies a target; unavailable hardware must not silently select
+    another GPU's ISA.
+    """
+    env_arch = os.environ.get("FLYDSL_GPU_ARCH") or os.environ.get("HSA_OVERRIDE_GFX_VERSION") or env.compile.arch
+    if env_arch:
+        normalized = _normalize_arch(env_arch)
+        if normalized.startswith("gfx"):
+            return normalized
+
+    arch = _arch_from_hardware()
+    if not arch:
+        raise RuntimeError(_DETECTION_FAILED)
+    return arch.lower()
 
 
 @functools.lru_cache(maxsize=None)
 def get_rocm_device_count() -> int:
-    """Best-effort ROCm visible GPU count via ``rocm_agent_enumerator`` (standard ROCm tool).
+    """Best-effort *physical* GPU count via ``rocm_agent_enumerator`` (standard ROCm tool).
+
+    This counts agents in the default enumerator view, which reads physical
+    topology (``target.lst`` / KFD nodes) rather than HSA visibility. It therefore
+    does **not** shrink under ``HIP_VISIBLE_DEVICES`` or ``ROCR_VISIBLE_DEVICES``;
+    use HIP's ``hipGetDeviceCount`` when a visibility-aware count is required.
 
     Returns 0 when the tool is unavailable or no discrete GPU agents are reported.
     """

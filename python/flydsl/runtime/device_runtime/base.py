@@ -21,7 +21,11 @@ class DeviceRuntime(metaclass=ABCMeta):
 
     @abstractmethod
     def device_count(self) -> int:
-        """Number of visible devices for this runtime."""
+        """Number of devices this runtime can enumerate.
+
+        Implementations should document whether the count follows runtime
+        visibility filters or reports physical hardware.
+        """
 
     @abstractmethod
     def current_device_id(self) -> int:
