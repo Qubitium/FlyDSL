@@ -469,20 +469,14 @@ Transforms Python control flow to MLIR ops at the AST level:
 If neither tool identifies a GPU and no explicit override is set, detection
 raises `RuntimeError` instead of assuming `gfx942`. On hosts without accessible
 ROCm hardware or detection tools, set `FLYDSL_GPU_ARCH` (or `ARCH`) to the
-intended target (for example, `FLYDSL_GPU_ARCH=gfx950`). This is what keeps
-`ARCH=gfx950 COMPILE_ONLY=1` cross-compiles — and every kernel module that probes
-the target at import time — importable without ROCm tooling.
-
-A failed detection is cached, so a missing or hanging tool is probed once per
-process rather than once per `get_rocm_arch()` call.
+intended target (for example, `ARCH=gfx950 COMPILE_ONLY=1` for cross-compilation).
+Failed detection is cached to avoid repeated slow probes.
 
 Device counting uses the default `rocm_agent_enumerator` output instead:
 `-name` can list multiple supported ISAs per GPU and overcount devices. The
-query used for counting reads physical topology and does **not** follow
-`HIP_VISIBLE_DEVICES` / `ROCR_VISIBLE_DEVICES`, so the result is a physical agent
-count, not a visibility-aware one; use HIP's `hipGetDeviceCount` when visibility
-matters. The count remains best-effort and returns zero if the enumerator is
-unavailable or reports no GPU agents; it does not use the `rocminfo` fallback.
+physical count may ignore `HIP_VISIBLE_DEVICES` / `ROCR_VISIBLE_DEVICES`; use
+HIP's `hipGetDeviceCount` when visibility matters. Counting returns zero if the
+enumerator is unavailable or reports no GPU agents.
 
 ---
 

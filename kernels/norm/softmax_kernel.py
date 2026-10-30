@@ -23,6 +23,7 @@ from kernels.common.kernels_common import LOG2E, dtype_to_elem_type, get_warp_si
 KERNEL_NAME = "softmax_kernel"
 
 BLOCK_THREADS = 256
+WARP_SIZE = get_warp_size()
 
 # Bumped whenever a kernel or search-space change can change the tuned winner. The
 # scratch cache does not fingerprint kernel source, so this is what forces a retune.
@@ -39,7 +40,6 @@ def build_softmax_module(
 ):
     """Build a Softmax launcher. ``M`` is vestigial: the row count is a runtime grid
     value, so it must not specialize the kernel."""
-    WARP_SIZE = get_warp_size()
     THREADS_PER_ROW = BLOCK_THREADS if THREADS_PER_ROW is None else THREADS_PER_ROW
     if BLOCK_THREADS != THREADS_PER_ROW * ROWS_PER_BLOCK:
         raise ValueError(
